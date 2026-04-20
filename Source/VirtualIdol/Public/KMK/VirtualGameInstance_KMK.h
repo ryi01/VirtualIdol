@@ -229,4 +229,13 @@ class VIRTUALIDOL_API UVirtualGameInstance_KMK : public UGameInstance
 	UFUNCTION( )
 	void MusicReload( );
 
+public:
+	UPROPERTY ( EditAnywhere , BlueprintReadWrite , Category = "Offline" )
+	bool bOfflineMode = true;   // 서버 없이 실행할 때 true
+
+	UFUNCTION ( BlueprintCallable )
+	bool IsOfflineMode ( ) const { return bOfflineMode; }
+
+	FString GetSafeUserName ( ) const;
+	void SetupOfflineDefaults ( );
 };

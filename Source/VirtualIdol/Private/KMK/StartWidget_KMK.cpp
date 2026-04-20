@@ -30,43 +30,51 @@
 
 void UStartWidget_KMK::NativeConstruct ( )
 {	
-    Super::NativeConstruct();
-	// gi 찾기
-	gi = Cast<UVirtualGameInstance_KMK>(GetWorld()->GetGameInstance() );
-	// 월드에 배치된 httpActor 찾기
-	httpActor = Cast<AHttpActor_KMK>(UGameplayStatics::GetActorOfClass(GetWorld() , httpFact));
-	// 월드에 배치된 selectManager 찾기 => 준혁이가 만들어놓은 액터로 공연 예약시, 공연장을 생성하여 이펙트를 고를 수 있도록 만듦
-	selectManager = Cast<AJJH_SelectManager>(UGameplayStatics::GetActorOfClass(GetWorld() , selectFact));
-	// ai 티켓 생성시, 로딩바 material => 동적 material 사용함 => 승우가 사용한 팬 캐릭터 점점 밝아지는 것과 비슷
-	loadMatInst = UMaterialInstanceDynamic::Create ( loadMatFact, this );
-	
+	Super::NativeConstruct ( );
+
+	UWorld* World = GetWorld ( );
+	if (!World)
+	{
+		return;
+	}
+
+	gi = Cast<UVirtualGameInstance_KMK> ( World->GetGameInstance ( ) );
+	httpActor = Cast<AHttpActor_KMK> ( UGameplayStatics::GetActorOfClass ( World , httpFact ) );
+	selectManager = Cast<AJJH_SelectManager> ( UGameplayStatics::GetActorOfClass ( World , selectFact ) );
+
+	if (loadMatFact)
+	{
+		loadMatInst = UMaterialInstanceDynamic::Create ( loadMatFact , this );
+	}
+
 	if (httpActor)
 	{
-		// httpActor 내부에 있는 sw(StartWidget)를 할당해줌
 		httpActor->sw = this;
 	}
-	// 로딩바
-	if (Image_Load)
+
+	if (Image_Load && loadMatInst)
 	{
-		// 로드 이미지에 material을 위에서 만든 loadMatInst(Dynamic Mat)로 변경
-		Image_Load->SetBrushFromMaterial(loadMatInst);
-		// dynamic mat의 변수값을 Gauge로 설정하고 초기 값을 0으로 셋팅
+		Image_Load->SetBrushFromMaterial ( loadMatInst );
 		loadMatInst->SetScalarParameterValue ( TEXT ( "Gauge" ) , 0 );
 	}
-	// gi->bLogin : 내가 로그인을 했는지 안했는지 확인용 bool 
-	if (gi->bLogin)
+
+	if (gi && gi->bLogin)
 	{
-		// 로그인 한적이 있으면 로그인 창으로 가지 않고 4가지 선택지로 이동
-		StartSwitcher->SetActiveWidgetIndex ( 1 );
-		// 콘서트 예약시에 생성한 오브젝트를 삭제
-		selectManager->DeleteStage ( );
-		// 로그인 하면 보이는 4가지 선택지 오른쪽 위에 있는 내 정보값 셋팅
+		if (StartSwitcher)
+		{
+			StartSwitcher->SetActiveWidgetIndex ( 1 );
+		}
+
+		if (selectManager)
+		{
+			selectManager->DeleteStage ( );
+		}
+
 		ChangeMyProfile ( );
 	}
-	else
+	else if (gi && gi->IsOfflineMode ( ))
 	{
-		// 최초 로그인 시, gi에 있는 bLogin을 true로 변경하여 로그인 함을 기억하고 있음
-		gi->bLogin = true;
+		EnterOfflineLogin ( );
 	}
 
 // ButtonBinding 구역, 확인할 필요 없음X => 맨 마지막에 SetButtEnable : 공연시작 버튼 활성화 여부를 위한 함수임
@@ -192,18 +200,16 @@ void UStartWidget_KMK::NativeConstruct ( )
 		Butt_Back3->OnClicked.AddDynamic ( this , &UStartWidget_KMK::GoBack );
 	}
 #pragma endregion
-#pragma region Session
 	if (gi)
 	{
-		gi->OnSearchSignatureCompleteDelegate.AddDynamic(this, &UStartWidget_KMK::CreateRoomWidget );
-		gi->SetStartWidget(this);
+		gi->OnSearchSignatureCompleteDelegate.AddDynamic ( this , &UStartWidget_KMK::CreateRoomWidget );
+		gi->SetStartWidget ( this );
 	}
 
-#pragma endregion
-#pragma endregion
-	SetButtEnable( );
-
+	SetButtEnable ( true );
 }
+
+
 
 void UStartWidget_KMK::NativeTick ( const FGeometry& MyGeometry , float InDeltaTime )
 {
@@ -268,14 +274,22 @@ void UStartWidget_KMK::GoBack ( )
 
 void UStartWidget_KMK::OnMyLogin ( )
 {
-	if(!httpActor) return;
-    // 아이디와 패스워드가 없으면 실행 안되게 하기
-	if (!EditText_ID->GetText ( ).IsEmpty ( ) && !EditText_PW->GetText ( ).IsEmpty ( ))
+	const FString Id = EditText_ID ? EditText_ID->GetText ( ).ToString ( ) : TEXT ( "" );
+	const FString Pw = EditText_PW ? EditText_PW->GetText ( ).ToString ( ) : TEXT ( "" );
+
+	if (IsOfflineMode ( ))
 	{
-		// 서버에 정보값 보내기
-		httpActor->ReqLogin(EditText_ID->GetText().ToString(), EditText_PW->GetText().ToString());
-		// 무대 조회하기
-		httpActor->ReqCheckAllOpenConcert();
+		EnterOfflineLogin ( );
+		return;
+	}
+
+	if (!Id.IsEmpty ( ) && !Pw.IsEmpty ( ))
+	{
+		if (httpActor)
+		{
+			httpActor->ReqLogin ( Id , Pw );
+			httpActor->ReqCheckAllOpenConcert ( );
+		}
 	}
 }
 
@@ -299,12 +313,34 @@ void UStartWidget_KMK::OnSignInPage ( )
 #pragma region FourButtPanel
 void UStartWidget_KMK::ChangeMyProfile ( )
 {
-	if (gi->GetMyInfo ( ).texture != nullptr)
+	FString UserName = TEXT ( "Guest" );
+	int32 Cash = 0;
+
+	if (gi)
 	{
-		Image_Profile->SetBrushFromTexture( gi->GetMyInfo ( ).texture );
+		Cash = gi->myCash;
+
+		FLoginInfo Info = gi->GetMyInfo ( );
+		if (!Info.userName.IsEmpty ( ))
+		{
+			UserName = Info.userName;
+		}
+
+		if (Image_Profile && Info.texture)
+		{
+			Image_Profile->SetBrushFromTexture ( Info.texture );
+		}
 	}
-	Text_MyCash->SetText(FText::AsNumber(gi->myCash));
-	Text_MyNick->SetText(FText::FromString(gi->GetMyInfo().userName));
+
+	if (Text_MyCash)
+	{
+		Text_MyCash->SetText ( FText::AsNumber ( Cash ) );
+	}
+
+	if (Text_MyNick)
+	{
+		Text_MyNick->SetText ( FText::FromString ( UserName ) );
+	}
 }
 
 void UStartWidget_KMK::SetButtEnable ( bool bEnable /*= false*/ )
@@ -322,23 +358,52 @@ void UStartWidget_KMK::CreateStagePanel ( )
 // 공연 일정 잡는 판넬로 변경
 void UStartWidget_KMK::SettingStagePanel ( )
 {
-	//StartSwitcher->SetActiveWidgetIndex ( 2 );
-	StartSwitcher->SetActiveWidgetIndex ( 3 );
-	httpActor->ReqCheckStage(this);
-	Butt_UserStage->SetVisibility(ESlateVisibility::Visible);
-	Butt_MyStage->SetVisibility(ESlateVisibility::Visible);
-	Butt_Star->SetVisibility(ESlateVisibility::Visible);
-	
+	if (StartSwitcher)
+	{
+		StartSwitcher->SetActiveWidgetIndex ( 3 );
+	}
+
+	if (httpActor && !IsOfflineMode ( ))
+	{
+		httpActor->ReqCheckStage ( this );
+	}
+	else
+	{
+		ClearSB ( );
+	}
+
+	if (Butt_UserStage) Butt_UserStage->SetVisibility ( ESlateVisibility::Visible );
+	if (Butt_MyStage)   Butt_MyStage->SetVisibility ( ESlateVisibility::Visible );
+	if (Butt_Star)      Butt_Star->SetVisibility ( ESlateVisibility::Visible );
 }
+
 // 공연 시작 : 세션 생성
 void UStartWidget_KMK::StartConcertPanel ( )
 {
-	if (gi)
+	if (!gi)
 	{
-		gi->playerMeshNum = -1;
-		gi->CreateMySession(gi->concerInfo.name, gi->concerInfo.peopleScale);
-		UE_LOG(LogTemp, Warning, TEXT("%s" ), *(gi->concerInfo.name));
+		return;
 	}
+
+	gi->playerMeshNum = -1;
+
+	if (gi->concerInfo.name.IsEmpty ( ))
+	{
+		gi->concerInfo = concertInfo;
+	}
+
+	if (gi->concerInfo.name.IsEmpty ( ))
+	{
+		gi->concerInfo.name = TEXT ( "OfflineConcert" );
+	}
+
+	if (gi->concerInfo.peopleScale <= 0)
+	{
+		gi->concerInfo.peopleScale = 1;
+	}
+
+	UGameplayStatics::OpenLevel ( GetWorld ( ) , FName ( TEXT ( "BetaMain" ) ) );
+	//gi->CreateMySession ( gi->concerInfo.name , gi->concerInfo.peopleScale );
 }
 
 void UStartWidget_KMK::ComeInStagePanel ( )
@@ -358,16 +423,22 @@ void UStartWidget_KMK::ComeInStagePanel ( )
 
 void UStartWidget_KMK::PressUserStageButt ( )
 {
-	ClearSB( );
-	// BE에서 스테이지 정보값 조회
-	httpActor->ReqCheckStage(this);
+	ClearSB ( );
+
+	if (httpActor && !IsOfflineMode ( ))
+	{
+		httpActor->ReqCheckStage ( this );
+	}
 }
 
 void UStartWidget_KMK::PressMyStageButt ( )
 {
-	ClearSB( );
-	// BE에서 스테이지 정보값 조회 
-	httpActor->ReqCheckMyStage(this);
+	ClearSB ( );
+
+	if (httpActor && !IsOfflineMode ( ))
+	{
+		httpActor->ReqCheckMyStage ( this );
+	}
 }
 
 void UStartWidget_KMK::CreateStageWidget (const struct FStageInfo& stageInfo, UTexture2D* image )
@@ -571,29 +642,44 @@ bool UStartWidget_KMK::EditTextDigit ( const FString& editText )
 // 티켓 생성부분 : 로직 변경 예정
 void UStartWidget_KMK::PressCreateTicket ( )
 {
-	if(!EditMultiText_Ticket->GetText().IsEmpty()) UE_LOG(LogTemp, Warning, TEXT("Create!" ) );
-	TMap<FString, FString> data;
-	data.Add(TEXT("prompt" ), EditMultiText_Ticket->GetText().ToString());
-	Text_Price->SetText ( FText::GetEmpty ( ) );
-	Image_Coin->SetVisibility(ESlateVisibility::Hidden);
-	if (Image_FinalStageImage->Brush.GetResourceObject ( ))
-	{
-		Image_FinalStageImage->Brush.SetResourceObject(nullptr);
-	}
-	// 이 부분 정보는 BE에서 끌어와야함
- //   FString year = TEXT ( "20" ) + EditText_Year->GetText ( ).ToString ( );
- //   FString mon = ChangeString ( EditText_Day->GetText ( ).ToString ( ) );
- //   FString day = ChangeString ( EditText_Day->GetText ( ).ToString ( ) );
-	//
- //   FString sH = EditText_SHour->GetText ( ).ToString ( );
- //   FString sM = EditText_SMin->GetText ( ).ToString ( );
+	TMap<FString , FString> data;
+	data.Add ( TEXT ( "prompt" ) , EditMultiText_Ticket ? EditMultiText_Ticket->GetText ( ).ToString ( ) : TEXT ( "" ) );
 
-	//FString concertString = TEXT("공연 명 : ") + EditText_StageName->GetText ( ).ToString ( ) + TEXT ( "\n" ) 
-	//					TEXT("공연 날짜 : " ) + year + TEXT ( "년" )+ mon + TEXT("월") + day + TEXT("일") + TEXT("\n") + TEXT("공연 시간 : " ) + sH +TEXT("시") + sM +TEXT("분");
-	//data.Add(TEXT("description"), *concertString);
-	Image_Load->SetVisibility(ESlateVisibility::Visible);
-	// 티켓 만들기
-	httpActor->ReqTicket(data);
+	if (Text_Price)
+	{
+		Text_Price->SetText ( FText::GetEmpty ( ) );
+	}
+
+	if (Image_Coin)
+	{
+		Image_Coin->SetVisibility ( ESlateVisibility::Hidden );
+	}
+
+	if (Image_FinalStageImage && Image_FinalStageImage->Brush.GetResourceObject ( ))
+	{
+		Image_FinalStageImage->Brush.SetResourceObject ( nullptr );
+	}
+
+	if (Image_Load)
+	{
+		Image_Load->SetVisibility ( ESlateVisibility::Visible );
+	}
+
+	if (httpActor && !IsOfflineMode ( ))
+	{
+		httpActor->ReqTicket ( data );
+	}
+	else
+	{
+		bCreateTicket = true;
+
+		if (Image_Load)
+		{
+			Image_Load->SetVisibility ( ESlateVisibility::Hidden );
+		}
+
+		SetTicketButton ( );
+	}
 }
 // 티켓이 생성되면 관련 image를 ticekt으로 변경함
 void UStartWidget_KMK::CreateTicketMaterial ( UTexture2D* texture)
@@ -764,43 +850,61 @@ void UStartWidget_KMK::PressNextButt ( )
 // 최종 결제를 누르게 되면
 void UStartWidget_KMK::PressMoneyPay ( )
 {
-	// 티켓이 만들어지지 않은 경우
+	if (!bCreateTicket)
+	{
+		if (Text_Effect1)    Text_Effect1->SetVisibility ( ESlateVisibility::Hidden );
+		if (MultiText_PopUp) MultiText_PopUp->SetVisibility ( ESlateVisibility::Visible );
+		if (EffectPopUp1)    EffectPopUp1->SetVisibility ( ESlateVisibility::Visible );
+		return;
+	}
 
-    if (!bCreateTicket)
-    {
-		 //팝업을 띄움
-        Text_Effect1->SetVisibility ( ESlateVisibility::Hidden );
-        MultiText_PopUp->SetVisibility ( ESlateVisibility::Visible );
-        EffectPopUp1->SetVisibility ( ESlateVisibility::Visible );
-        return;
-    }
-    else
-    { 
-	// 티켓 생성시, 최종 결제 창을 띄움
-		Text_Effect1->SetVisibility ( ESlateVisibility::Visible );
-		MultiText_PopUp->SetVisibility ( ESlateVisibility::Hidden );
-		EffectPopUp1->SetVisibility ( ESlateVisibility::Hidden );
-		Image_Load->SetVisibility ( ESlateVisibility::Hidden );
-    }
-	// 
+	if (Text_Effect1)    Text_Effect1->SetVisibility ( ESlateVisibility::Visible );
+	if (MultiText_PopUp) MultiText_PopUp->SetVisibility ( ESlateVisibility::Hidden );
+	if (EffectPopUp1)    EffectPopUp1->SetVisibility ( ESlateVisibility::Hidden );
+	if (Image_Load)      Image_Load->SetVisibility ( ESlateVisibility::Hidden );
 
-	// 콘서트 예약시 사용된 stage 값을 넣음
-	concertInfo.stageId = gi->stageNum;
-	// 서버에 콘서트 예약한 정보를 보냄
-	httpActor->ReqSetMyConcert(concertInfo);
+	concertInfo.stageId = gi ? gi->stageNum : -1;
+
+	if (httpActor && !IsOfflineMode ( ))
+	{
+		httpActor->ReqSetMyConcert ( concertInfo );
+	}
+	else
+	{
+		if (gi)
+		{
+			gi->concerInfo = concertInfo;
+		}
+		PressOkayButt ( );
+	}
 }
 
 // 최종 결제창에서 okay를 누르면
 void UStartWidget_KMK::PressOkayButt ( )
 {
-	// 내 캐쉬를 차감하고
-	Text_MyCash->SetText(FText::AsNumber(gi->myCash));
-	// 초기 셋팅값으로 변경함
+	if (gi)
+	{
+		gi->concerInfo = concertInfo;
+	}
+
+	if (Text_MyCash)
+	{
+		Text_MyCash->SetText ( FText::AsNumber ( gi ? gi->myCash : 0 ) );
+	}
+
 	ClearSB ( );
-	StartSwitcher->SetActiveWidgetIndex ( 1 );
-	ResetWidget( );
-	// 서버 단에 올라간 예약정보를 끌고옴
-	httpActor->ReqCheckMyConcert();
+
+	if (StartSwitcher)
+	{
+		StartSwitcher->SetActiveWidgetIndex ( 1 );
+	}
+
+	ResetWidget ( );
+
+	if (httpActor && !IsOfflineMode ( ))
+	{
+		httpActor->ReqCheckMyConcert ( );
+	}
 }
 
 // 초기값으로 변경하는 부분 
@@ -915,3 +1019,24 @@ void UStartWidget_KMK::SetLoadImage ( )
 }
 
 #pragma endregion
+
+bool UStartWidget_KMK::IsOfflineMode ( ) const
+{
+	return ( gi && gi->IsOfflineMode ( ) ) || ( httpActor == nullptr );
+}
+
+void UStartWidget_KMK::EnterOfflineLogin ( )
+{
+	if (gi)
+	{
+		gi->SetupOfflineDefaults ( );
+	}
+
+	if (StartSwitcher)
+	{
+		StartSwitcher->SetActiveWidgetIndex ( 1 );
+	}
+
+	ChangeMyProfile ( );
+	SetButtEnable ( true );
+}

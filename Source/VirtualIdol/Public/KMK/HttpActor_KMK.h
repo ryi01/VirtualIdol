@@ -263,4 +263,10 @@ public:
 	void SaveWavToFile ( const FString & FileName , const TArray<uint8>&Data );
 #pragma endregion
 
+protected:
+	bool ShouldUseServer ( ) const;
+	void HandleOfflineLoginSuccess ( );
+	void HandleOfflineTicketCreated ( );
 };
+
+

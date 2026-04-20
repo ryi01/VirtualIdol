@@ -26,19 +26,31 @@ AHttpActor_KMK::AHttpActor_KMK()
 }
 
 // Called when the game starts or when spawned
-void AHttpActor_KMK::BeginPlay()
+void AHttpActor_KMK::BeginPlay ( )
 {
-	Super::BeginPlay();
-	 gi = Cast<UVirtualGameInstance_KMK>(GetWorld()->GetGameInstance() );
-	 if (gi && !gi->GetMyInfo().token.IsEmpty())
-	 {
-		 loginInfo = gi->GetMyInfo();
-	 }
-	 if (effectArray.Num ( ) > 0 && gi)
-	 {
-		 gi->effectArray = effectArray;
-	 }
-	 SelectManager = Cast<AJJH_SelectManager>(UGameplayStatics::GetActorOfClass(this, AJJH_SelectManager::StaticClass()));
+	Super::BeginPlay ( );
+
+	gi = Cast<UVirtualGameInstance_KMK> ( GetWorld ( )->GetGameInstance ( ) );
+
+	if (gi)
+	{
+		if (gi->IsOfflineMode ( ))
+		{
+			gi->SetupOfflineDefaults ( );
+			loginInfo = gi->GetMyInfo ( );
+		}
+		else if (!gi->GetMyInfo ( ).token.IsEmpty ( ))
+		{
+			loginInfo = gi->GetMyInfo ( );
+		}
+
+		if (effectArray.Num ( ) > 0)
+		{
+			gi->effectArray = effectArray;
+		}
+	}
+
+	SelectManager = Cast<AJJH_SelectManager> ( UGameplayStatics::GetActorOfClass ( this , AJJH_SelectManager::StaticClass ( ) ) );
 }
 
 // Called every frame
@@ -51,89 +63,92 @@ void AHttpActor_KMK::Tick(float DeltaTime)
 // 로그인 관련 서버 연결
 void AHttpActor_KMK::ReqLogin ( const FString& id , const FString& pw )
 {
-	// HTTP 모듈 생성
+	if (!ShouldUseServer ( ))
+	{
+		HandleOfflineLoginSuccess ( );
+		return;
+	}
+
 	FHttpModule& httpModule = FHttpModule::Get ( );
 	TSharedRef<IHttpRequest> req = httpModule.CreateRequest ( );
 
-	req->SetURL(TEXT("http://back.reward-factory.shop:8123/api/v1/auth/login") );
-	req->SetVerb(TEXT("POST"));
-	req->SetHeader(TEXT("content-type") , TEXT("application/json"));
-	req->SetContentAsString(UJsonParseLib_KMK::MakeLoginJson(id , pw));
-
-	req->OnProcessRequestComplete().BindUObject(this , &AHttpActor_KMK::OnResLogin);
-
-	req->ProcessRequest();
-
+	req->SetURL ( TEXT ( "http://back.reward-factory.shop:8123/api/v1/auth/login" ) );
+	req->SetVerb ( TEXT ( "POST" ) );
+	req->SetHeader ( TEXT ( "content-type" ) , TEXT ( "application/json" ) );
+	req->SetContentAsString ( UJsonParseLib_KMK::MakeLoginJson ( id , pw ) );
+	req->OnProcessRequestComplete ( ).BindUObject ( this , &AHttpActor_KMK::OnResLogin );
+	req->ProcessRequest ( );
 }
 
 void AHttpActor_KMK::OnResLogin ( FHttpRequestPtr Request , FHttpResponsePtr Response , bool bConnectedSuccessfully )
 {
-	if (bConnectedSuccessfully)
+
+	if (!bConnectedSuccessfully || !Response.IsValid ( ))
 	{
-		// 로그인에 성공한 경우
-		loginInfo = UJsonParseLib_KMK::ParsecMyInfo(Response->GetContentAsString());
-		// 로그인 이미지에 http://~~~라는 주소값이 오면
-		if (loginInfo.userImg.Contains(TEXT("http" )))
-		{
-			// 주소값을 통해 이미지를 생성함
-			DownloadImageFromUrl(loginInfo.userImg, loginInfo);
-		}
-		else
-		{
-			// 프로필이 없다면 다음 페이지로 넘어감
-			gi->SwitchWidget ( 1 );
-		}
-		
-		// 토큰이 존재한다면 => 모든 정보값이 존재함
-		if ( gi && !loginInfo.email.IsEmpty()) 
-		{
-			// 내 정보를 gi에 셋팅
-			gi->SetMyInfo(loginInfo);
-			// 위잿을 업데이트
-			gi->SetMyProfile();
-			// 내가 예약한 콘서트가 있는지 확인
-			ReqCheckMyConcert();
-			UE_LOG ( LogTemp , Log , TEXT ( "%s" ) , *loginInfo.token );
-		}
-		else
-		{
-			// 로그인 실패시 팝업 생성
-			gi->LoginPanel();
-		}
+		if (gi) gi->LoginPanel ( );
+		return;
 	}
-	else 
+
+	loginInfo = UJsonParseLib_KMK::ParsecMyInfo ( Response->GetContentAsString ( ) );
+
+	if (loginInfo.userImg.Contains ( TEXT ( "http" ) ))
 	{
-		// 실패
-		gi->LoginPanel ( );
-		UE_LOG ( LogTemp , Warning , TEXT ( "OnResLogin Failed..." ) );
+		DownloadImageFromUrl ( loginInfo.userImg , loginInfo );
 	}
-	FString authHeader = FString::Printf ( TEXT ( "Bearer %s" ) , *loginInfo.token );
+	else
+	{
+		if (gi) gi->SwitchWidget ( 1 );
+	}
+
+	if (gi && !loginInfo.email.IsEmpty ( ))
+	{
+		gi->SetMyInfo ( loginInfo );
+		gi->SetMyProfile ( );
+		ReqCheckMyConcert ( );
+	}
+	else
+	{
+		if (gi) gi->LoginPanel ( );
+	}
 }
 #pragma endregion
 #pragma region Concert
 // 콘서트장 예약하는 부분
-void AHttpActor_KMK::ReqSetMyConcert (FConcertInfo& concert )
+void AHttpActor_KMK::ReqSetMyConcert ( FConcertInfo& concert )
 {
-	// HTTP 모듈 생성
+	if (!ShouldUseServer ( ))
+	{
+		if (gi)
+		{
+			gi->concerInfo = concert;
+			gi->PopUpVisible ( );
+		}
+		return;
+	}
+
 	FHttpModule& httpModule = FHttpModule::Get ( );
 	TSharedRef<IHttpRequest> req = httpModule.CreateRequest ( );
 
-	req->SetURL(TEXT("http://back.reward-factory.shop:8123/api/v1/concerts") );
-	req->SetVerb(TEXT("POST"));
-	req->SetHeader(TEXT("content-type") , TEXT("application/json"));
+	req->SetURL ( TEXT ( "http://back.reward-factory.shop:8123/api/v1/concerts" ) );
+	req->SetVerb ( TEXT ( "POST" ) );
+	req->SetHeader ( TEXT ( "content-type" ) , TEXT ( "application/json" ) );
 	concert.img = ticketURL;
-	FString s = UJsonParseLib_KMK::MakeConcertJson(concert) ;
-    req->SetContentAsString (s);
-	FString AuthHeader = FString::Printf(TEXT("Bearer %s"), *loginInfo.token);
-	req->SetHeader(TEXT("Authorization"), AuthHeader);
-	UE_LOG ( LogTemp , Log , TEXT ( "%s" ) ,  *(TEXT("Bearer " ) + loginInfo.token) );
-	req->OnProcessRequestComplete().BindUObject(this , &AHttpActor_KMK::OnResSetConcert);
+	req->SetContentAsString ( UJsonParseLib_KMK::MakeConcertJson ( concert ) );
 
-	req->ProcessRequest();
+	FString AuthHeader = FString::Printf ( TEXT ( "Bearer %s" ) , *loginInfo.token );
+	req->SetHeader ( TEXT ( "Authorization" ) , AuthHeader );
+
+	req->OnProcessRequestComplete ( ).BindUObject ( this , &AHttpActor_KMK::OnResSetConcert );
+	req->ProcessRequest ( );
 }
 
 void AHttpActor_KMK::OnResSetConcert ( FHttpRequestPtr Request , FHttpResponsePtr Response , bool bConnectedSuccessfully )
 {
+	if (!bConnectedSuccessfully || !Response.IsValid ( ))
+	{
+		return;
+	}
+
 	if (!bConnectedSuccessfully)
 	{
 		UE_LOG(LogTemp, Error, TEXT("HTTP 요청 실패"));
@@ -157,27 +172,36 @@ void AHttpActor_KMK::OnResSetConcert ( FHttpRequestPtr Request , FHttpResponsePt
 	}
 }
 // 무대 불러오기
-void AHttpActor_KMK::ReqCheckStage (class UStartWidget_KMK* startWidget )
+void AHttpActor_KMK::ReqCheckStage ( UStartWidget_KMK* startWidget )
 {
-	if(!startWidget) return;
+	if (!startWidget) return;
 	sw = startWidget;
-	// HTTP 모듈 생성
+
+	if (!ShouldUseServer ( ))
+	{
+		sw->ClearSB ( );
+		return;
+	}
+
 	FHttpModule& httpModule = FHttpModule::Get ( );
 	TSharedRef<IHttpRequest> req = httpModule.CreateRequest ( );
-	// 요청할 정보를 설정
-	FString authHeader = FString::Printf ( TEXT ( "Bearer %s" ) , *gi->loginInfo.token );
-    req->SetHeader(TEXT("Authorization"), *( authHeader ));
-	req->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-	req->SetURL(TEXT("http://back.reward-factory.shop:8123/api/v1/stages") );
-	req->SetVerb ( TEXT ( "GET" ) );
 
-	req->ProcessRequest ( );
-	// 응답받을 함수를 연결
+	FString authHeader = FString::Printf ( TEXT ( "Bearer %s" ) , *gi->loginInfo.token );
+	req->SetHeader ( TEXT ( "Authorization" ) , authHeader );
+	req->SetHeader ( TEXT ( "Content-Type" ) , TEXT ( "application/json" ) );
+	req->SetURL ( TEXT ( "http://back.reward-factory.shop:8123/api/v1/stages" ) );
+	req->SetVerb ( TEXT ( "GET" ) );
 	req->OnProcessRequestComplete ( ).BindUObject ( this , &AHttpActor_KMK::OnResCheckStage );
+	req->ProcessRequest ( );
 }
 
 void AHttpActor_KMK::OnResCheckStage ( FHttpRequestPtr Request , FHttpResponsePtr Response , bool bConnectedSuccessfully )
 {
+	if (!bConnectedSuccessfully || !Response.IsValid ( ))
+	{
+		return;
+	}
+
 	if (Response->GetResponseCode ( ) == 200)
 	{
 		UE_LOG ( LogTemp , Error , TEXT ( "CheckStage Successed" ));
@@ -201,29 +225,38 @@ void AHttpActor_KMK::OnResCheckStage ( FHttpRequestPtr Request , FHttpResponsePt
 }
 
 // 내가 만든 공연장이 있다면
-void AHttpActor_KMK::ReqCheckMyStage ( class UStartWidget_KMK* startWidget )
+void AHttpActor_KMK::ReqCheckMyStage ( UStartWidget_KMK* startWidget )
 {
-	if(!startWidget) return;
+	if (!startWidget) return;
 	sw = startWidget;
-	// HTTP 모듈 생성
+
+	if (!ShouldUseServer ( ))
+	{
+		sw->ClearSB ( );
+		return;
+	}
+
 	FHttpModule& httpModule = FHttpModule::Get ( );
 	TSharedRef<IHttpRequest> req = httpModule.CreateRequest ( );
-	// 요청할 정보를 설정
-	FString authHeader = FString::Printf ( TEXT ( "Bearer %s" ) , *gi->loginInfo.token );
-    req->SetHeader(TEXT("Authorization"), *( authHeader ));
-	req->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-	FString url = TEXT("http://back.reward-factory.shop:8123/api/v1/stages/user/") + FString::FormatAsNumber(gi->GetMyInfo().userId );
-	UE_LOG ( LogTemp , Warning , TEXT ( "ImagePath: %s" ) , *url );
-	req->SetURL(url );
-	req->SetVerb ( TEXT ( "GET" ) );
 
-	req->ProcessRequest ( );
-	// 응답받을 함수를 연결
+	FString authHeader = FString::Printf ( TEXT ( "Bearer %s" ) , *gi->loginInfo.token );
+	req->SetHeader ( TEXT ( "Authorization" ) , authHeader );
+	req->SetHeader ( TEXT ( "Content-Type" ) , TEXT ( "application/json" ) );
+
+	FString url = TEXT ( "http://back.reward-factory.shop:8123/api/v1/stages/user/" ) + FString::FormatAsNumber ( gi->GetMyInfo ( ).userId );
+	req->SetURL ( url );
+	req->SetVerb ( TEXT ( "GET" ) );
 	req->OnProcessRequestComplete ( ).BindUObject ( this , &AHttpActor_KMK::OnResCheckMyStage );
+	req->ProcessRequest ( );
 }
 
 void AHttpActor_KMK::OnResCheckMyStage ( FHttpRequestPtr Request , FHttpResponsePtr Response , bool bConnectedSuccessfully )
 {
+	if (!bConnectedSuccessfully || !Response.IsValid ( ))
+	{
+		return;
+	}
+
 	if (bConnectedSuccessfully)
 	{
 		// 성공 => 내가 만든 세트장이 있다면
@@ -267,52 +300,31 @@ void AHttpActor_KMK::DownloadImageFromUrl ( const FString& imageUrl , const FLog
 	req->ProcessRequest ( );
 }
 //  백엔드에서 무대와 관련된 이미지가 생성된 경우
-void AHttpActor_KMK::OnImageDownComplete ( FHttpRequestPtr Request , FHttpResponsePtr Response , bool bWasSuccessful, FStageInfo stageInfo  )
+void AHttpActor_KMK::OnImageDownComplete ( FHttpRequestPtr Request , FHttpResponsePtr Response , bool bWasSuccessful , FStageInfo stageInfo )
 {
-	if (bWasSuccessful&& Response.IsValid())
+	if (!bWasSuccessful || !Response.IsValid ( ))
 	{
-		if (Response->GetResponseCode() != 200)
-        {
-            UE_LOG ( LogTemp , Error , TEXT ( "Failed to get image. Response Code: %d" ) , Response->GetResponseCode ( ) );
-            return;
-        }
-		FString ContentType = Response->GetContentType();
-        UE_LOG ( LogTemp , Log , TEXT ( "Content-Type: %s" ) , *ContentType );
+		return;
+	}
 
-        if (!ContentType.Contains ( "image" ))
-        {
-            UE_LOG ( LogTemp , Error , TEXT ( "Unexpected Content-Type: %s" ) , *ContentType );
-            return;
-        }
-        // 다운로드 받은 PNG 데이터를 파일로 저장
-        const TArray<uint8>& ImageData = Response->GetContent();
-		// 받은 이미지를 texture로 변경
-		UTexture2D* texture = UJsonParseLib_KMK::MakeTexture(ImageData);
-        if (texture)
-        {
-            UE_LOG(LogTemp, Log, TEXT("Image downloaded and texture created successfully!"));
-            // 무대 이미지를 넣은 RoomWidget 생성
-			sw->CreateStageWidget(stageInfo, texture);
-        }
-        else
-        {
-            UE_LOG(LogTemp, Error, TEXT("Failed to create texture from downloaded image data."));
-        }
-    }
-   else
-   {
-       if (Response.IsValid())
-       {
-           UE_LOG(LogTemp, Error, TEXT("Failed to download image. Response code: %d"), Response->GetResponseCode());
-       }
-       else
-       {
-           UE_LOG(LogTemp, Error, TEXT("Response is invalid"));
-		   // 실패시 다시 시도
-		   if(ticketData.Num() > 0) ReqTicket(ticketData );
-       }
-   }
-    
+	if (Response->GetResponseCode ( ) != 200)
+	{
+		return;
+	}
+
+	FString ContentType = Response->GetContentType ( );
+	if (!ContentType.Contains ( TEXT ( "image" ) ))
+	{
+		return;
+	}
+
+	const TArray<uint8>& ImageData = Response->GetContent ( );
+	UTexture2D* texture = UJsonParseLib_KMK::MakeTexture ( ImageData );
+
+	if (texture && sw)
+	{
+		sw->CreateStageWidget ( stageInfo , texture );
+	}
 }
 
 //  백엔드에서 프로필과 관련된 이미지가 생성된 경우
@@ -360,29 +372,37 @@ void AHttpActor_KMK::OnImageDownComplete ( FHttpRequestPtr Request , FHttpRespon
 // 티켓 만들기 => AI 측에 만들어달라고 신호보내기
 void AHttpActor_KMK::ReqTicket ( const TMap<FString , FString> data )
 {
-	// HTTP 모듈 생성
+	if (!ShouldUseServer ( ))
+	{
+		HandleOfflineTicketCreated ( );
+		return;
+	}
+
 	FHttpModule& httpModule = FHttpModule::Get ( );
 	TSharedRef<IHttpRequest> req = httpModule.CreateRequest ( );
-	// 요청할 정보를 설정
-	//TMap<FString , FString> data;
-	//data.Add ( TEXT ( "key" ) , json );
-	if(ticketData.Num() <= 0) ticketData = data;
 
-	req->SetURL(TEXT("https://singular-swine-deeply.ngrok-free.app/generate-image") );
+	if (ticketData.Num ( ) <= 0)
+	{
+		ticketData = data;
+	}
+
+	req->SetURL ( TEXT ( "https://singular-swine-deeply.ngrok-free.app/generate-image" ) );
 	req->SetVerb ( TEXT ( "POST" ) );
-	// TEXT ( "application/json" )  ->TEXT("image/jpeg")
 	req->SetHeader ( TEXT ( "content-type" ) , TEXT ( "application/json" ) );
-	req->SetTimeout(240.f);
+	req->SetTimeout ( 240.f );
 	req->SetContentAsString ( UJsonParseLib_KMK::CreateTicketJson ( ticketData ) );
-	req->ProcessRequest ( );
-	// 응답받을 함수를 연결
 	req->OnProcessRequestComplete ( ).BindUObject ( this , &AHttpActor_KMK::OnResTicket );
-	// 서버에 요청
-
+	req->ProcessRequest ( );
 }
+
 // 응답 받기
 void AHttpActor_KMK::OnResTicket ( FHttpRequestPtr Request , FHttpResponsePtr Response , bool bConnectedSuccessfully )
 {
+	if (!bConnectedSuccessfully || !Response.IsValid ( ))
+	{
+		return;
+	}
+
  	if (bConnectedSuccessfully && Response.IsValid() && Response->GetResponseCode() == 200)
     {
         // 다운로드 받은 PNG 데이터를 파일로 저장
@@ -434,6 +454,17 @@ void AHttpActor_KMK::OnResTicket ( FHttpRequestPtr Request , FHttpResponsePtr Re
 }
 void AHttpActor_KMK::ReqMultipartCapturedWithAI (const FString& ImagePath , const FString& url )
 {
+	if (!ShouldUseServer ( ))
+	{
+		ticketURL = ImagePath;
+
+		if (gi && gi->widget)
+		{
+			gi->widget->SetTicketButton ( );
+		}
+		return;
+	}
+
 	UE_LOG ( LogTemp , Warning , TEXT ( "Image upload start. 2" ) );
 
 	// Create an HTTP request for the multipart upload
@@ -538,9 +569,12 @@ void AHttpActor_KMK::OnReqMultipartCapturedWithAI ( FHttpRequestPtr Request , FH
 	}
 }
 
-void AHttpActor_KMK::OnTextureCreated(UTexture2D* texture)
+void AHttpActor_KMK::OnTextureCreated ( UTexture2D* texture )
 {
-	 gi->widget->CreateTicketMaterial(texture );
+	if (gi && gi->widget)
+	{
+		gi->widget->CreateTicketMaterial ( texture );
+	}
 }
 #pragma endregion
 #pragma region Translate
@@ -690,25 +724,32 @@ if (bWasSuccessful&& Response.IsValid())
 
 void AHttpActor_KMK::ReqCheckMyConcert ( )
 {
-	// HTTP 모듈 생성
+	if (!ShouldUseServer ( ))
+	{
+		return;
+	}
+
 	FHttpModule& httpModule = FHttpModule::Get ( );
 	TSharedRef<IHttpRequest> req = httpModule.CreateRequest ( );
-	// 요청할 정보를 설정
+
 	FString AuthHeader = FString::Printf ( TEXT ( "Bearer %s" ) , *gi->loginInfo.token );
 	req->SetHeader ( TEXT ( "Authorization" ) , AuthHeader );
-	req->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-	FString url = TEXT("http://back.reward-factory.shop:8123/api/v1/concerts/user/") + FString::FormatAsNumber(gi->GetMyInfo().userId );
-	UE_LOG ( LogTemp , Warning , TEXT ( "ImagePath: %s" ) , *url );
-	req->SetURL(url );
-	req->SetVerb ( TEXT ( "GET" ) );
+	req->SetHeader ( TEXT ( "Content-Type" ) , TEXT ( "application/json" ) );
 
-	req->ProcessRequest ( );
-	// 응답받을 함수를 연결
+	FString url = TEXT ( "http://back.reward-factory.shop:8123/api/v1/concerts/user/" ) + FString::FormatAsNumber ( gi->GetMyInfo ( ).userId );
+	req->SetURL ( url );
+	req->SetVerb ( TEXT ( "GET" ) );
 	req->OnProcessRequestComplete ( ).BindUObject ( this , &AHttpActor_KMK::OnResqCheckMyConcert );
+	req->ProcessRequest ( );
 }
 
 void AHttpActor_KMK::OnResqCheckMyConcert ( FHttpRequestPtr Request , FHttpResponsePtr Response , bool bConnectedSuccessfully )
 {
+	if (!bConnectedSuccessfully || !Response.IsValid ( ))
+	{
+		return;
+	}
+
 	if (bConnectedSuccessfully)
 	{
 		// 성공
@@ -732,25 +773,37 @@ void AHttpActor_KMK::OnResqCheckMyConcert ( FHttpRequestPtr Request , FHttpRespo
 		UE_LOG ( LogTemp , Warning , TEXT ( "Failed myStage" ) );
 	}
 }
+
 void AHttpActor_KMK::ReqCheckAllOpenConcert ( )
 {
-	// HTTP 모듈 생성
+	if (!ShouldUseServer ( ))
+	{
+		if (gi)
+		{
+			gi->allConcertInfoArray.Empty ( );
+		}
+		return;
+	}
+
 	FHttpModule& httpModule = FHttpModule::Get ( );
 	TSharedRef<IHttpRequest> req = httpModule.CreateRequest ( );
-	// 요청할 정보를 설정
+
 	FString AuthHeader = FString::Printf ( TEXT ( "Bearer %s" ) , *gi->loginInfo.token );
 	req->SetHeader ( TEXT ( "Authorization" ) , AuthHeader );
-	req->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-	req->SetURL(TEXT("http://back.reward-factory.shop:8123/api/v1/concerts" ) );
+	req->SetHeader ( TEXT ( "Content-Type" ) , TEXT ( "application/json" ) );
+	req->SetURL ( TEXT ( "http://back.reward-factory.shop:8123/api/v1/concerts" ) );
 	req->SetVerb ( TEXT ( "GET" ) );
-
-	req->ProcessRequest ( );
-	// 응답받을 함수를 연결
 	req->OnProcessRequestComplete ( ).BindUObject ( this , &AHttpActor_KMK::OnResCheckAllOpenConcert );
+	req->ProcessRequest ( );
 }
 
 void AHttpActor_KMK::OnResCheckAllOpenConcert ( FHttpRequestPtr Request , FHttpResponsePtr Response , bool bConnectedSuccessfully )
 {
+	if (!bConnectedSuccessfully || !Response.IsValid ( ))
+	{
+		return;
+	}
+
 	if (bConnectedSuccessfully)
 	{
 		// 성공
@@ -785,25 +838,36 @@ void AHttpActor_KMK::OnResCheckAllOpenConcert ( FHttpRequestPtr Request , FHttpR
 
 void AHttpActor_KMK::ReqCheckIdStage ( int32 num )
 {
-	// HTTP 모듈 생성
+	if (!ShouldUseServer ( ))
+	{
+		if (sw)
+		{
+			sw->SetButtEnable ( true );
+		}
+		return;
+	}
+
 	FHttpModule& httpModule = FHttpModule::Get ( );
 	TSharedRef<IHttpRequest> req = httpModule.CreateRequest ( );
-	// 요청할 정보를 설정
-	FString authHeader = FString::Printf ( TEXT ( "Bearer %s" ) , *gi->loginInfo.token );
-    req->SetHeader(TEXT("Authorization"), *( authHeader ));
-	req->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-	FString url = TEXT("http://back.reward-factory.shop:8123/api/v1/stages/") + FString::FormatAsNumber(num );
-	UE_LOG ( LogTemp , Warning , TEXT ( "URL: %s" ) , *url );
-	req->SetURL(url );
-	req->SetVerb ( TEXT ( "GET" ) );
 
-	req->ProcessRequest ( );
-	// 응답받을 함수를 연결
+	FString authHeader = FString::Printf ( TEXT ( "Bearer %s" ) , *gi->loginInfo.token );
+	req->SetHeader ( TEXT ( "Authorization" ) , authHeader );
+	req->SetHeader ( TEXT ( "Content-Type" ) , TEXT ( "application/json" ) );
+
+	FString url = TEXT ( "http://back.reward-factory.shop:8123/api/v1/stages/" ) + FString::FormatAsNumber ( num );
+	req->SetURL ( url );
+	req->SetVerb ( TEXT ( "GET" ) );
 	req->OnProcessRequestComplete ( ).BindUObject ( this , &AHttpActor_KMK::OnResCheckIdStage );
+	req->ProcessRequest ( );
 }
 
 void AHttpActor_KMK::OnResCheckIdStage ( FHttpRequestPtr Request , FHttpResponsePtr Response , bool bConnectedSuccessfully )
 {
+	if (!bConnectedSuccessfully || !Response.IsValid ( ))
+	{
+		return;
+	}
+
 	if (bConnectedSuccessfully)
 	{
 		// 성공
@@ -999,6 +1063,10 @@ void AHttpActor_KMK::OnReqMultiCollectionConcert ( FHttpRequestPtr Request , FHt
 #pragma region BE Music
 void AHttpActor_KMK::ReqMusic ( int64 ConcertId )
 {
+	if (!ShouldUseServer ( ))
+	{
+		return;
+	}
 	UE_LOG ( LogTemp , Warning , TEXT ( "ReqMusic Start" ) );
 
 	// API 요청 URL 생성
@@ -1116,3 +1184,32 @@ void AHttpActor_KMK::SaveWavToFile ( const FString& FileName , const TArray<uint
 	}
 }
 #pragma endregion
+
+bool AHttpActor_KMK::ShouldUseServer ( ) const
+{
+	return gi && !gi->IsOfflineMode ( );
+}
+
+void AHttpActor_KMK::HandleOfflineLoginSuccess ( )
+{
+	if (!gi)
+	{
+		return;
+	}
+
+	gi->SetupOfflineDefaults ( );
+	loginInfo = gi->GetMyInfo ( );
+	gi->SetMyInfo ( loginInfo );
+	gi->SetMyProfile ( );
+	gi->SwitchWidget ( 1 );
+}
+
+void AHttpActor_KMK::HandleOfflineTicketCreated ( )
+{
+	if (sw)
+	{
+		sw->bCreateTicket = true;
+		sw->SetLoadImage ( );
+		sw->SetTicketButton ( );
+	}
+}

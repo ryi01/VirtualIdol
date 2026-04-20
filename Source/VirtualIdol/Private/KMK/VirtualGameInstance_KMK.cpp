@@ -30,123 +30,128 @@
 */
 void UVirtualGameInstance_KMK::Init ( )
 {
-    Super::Init();
-    if (auto* subSystem = IOnlineSubsystem::Get ( ))
+    Super::Init ( );
+
+    if (bOfflineMode)
     {
-        sessionInterface = subSystem->GetSessionInterface();
-        // 방생성 요청, 응답
-        sessionInterface->OnCreateSessionCompleteDelegates.AddUObject(this, &UVirtualGameInstance_KMK::OnMyCreateSessionComplete );
-        // 방찾기 성공
-        sessionInterface->OnFindSessionsCompleteDelegates.AddUObject(this, &UVirtualGameInstance_KMK::OnMyFindSessionComplete);
-         // 방입장
-        sessionInterface->OnJoinSessionCompleteDelegates.AddUObject(this , &UVirtualGameInstance_KMK::JoinRoomComplete);
-        // 방 퇴장
-        sessionInterface->OnDestroySessionCompleteDelegates.AddUObject(this , &UVirtualGameInstance_KMK::OnMyDestroyRoomComplete);
+        SetupOfflineDefaults ( );
+        return;
     }
 
+    if (auto* subSystem = IOnlineSubsystem::Get ( ))
+    {
+        sessionInterface = subSystem->GetSessionInterface ( );
+
+        if (sessionInterface.IsValid ( ))
+        {
+            sessionInterface->OnCreateSessionCompleteDelegates.AddUObject ( this , &UVirtualGameInstance_KMK::OnMyCreateSessionComplete );
+            sessionInterface->OnFindSessionsCompleteDelegates.AddUObject ( this , &UVirtualGameInstance_KMK::OnMyFindSessionComplete );
+            sessionInterface->OnJoinSessionCompleteDelegates.AddUObject ( this , &UVirtualGameInstance_KMK::JoinRoomComplete );
+            sessionInterface->OnDestroySessionCompleteDelegates.AddUObject ( this , &UVirtualGameInstance_KMK::OnMyDestroyRoomComplete );
+        }
+    }
 }
 
 #pragma region Create Session
 
-void UVirtualGameInstance_KMK::CreateMySession ( FString RoomName, int32 PlayerCount )
+void UVirtualGameInstance_KMK::CreateMySession ( FString RoomName , int32 PlayerCount )
 {
-    // IOnlineSubsystem을 통해 세션 인터페이스 가져오기
-    IOnlineSubsystem* subSystem = IOnlineSubsystem::Get();
+    HostName = GetSafeUserName ( );
+
+    if (bOfflineMode)
+    {
+        UWorld* World = GetWorld ( );
+        if (World)
+        {
+            UGameplayStatics::OpenLevel ( World , FName ( TEXT ( "/Game/Project/CommonFile/Maps/EmptyLevel" ) ) );
+        }
+        return;
+    }
+
+    IOnlineSubsystem* subSystem = IOnlineSubsystem::Get ( );
     if (!subSystem)
     {
-        UE_LOG(LogTemp, Error, TEXT("OnlineSubsystem is null. Make sure your Online Subsystem plugin is enabled in the project settings."));
+        UE_LOG ( LogTemp , Error , TEXT ( "OnlineSubsystem is null." ) );
         return;
     }
 
-    sessionInterface = subSystem->GetSessionInterface();
-    if (!sessionInterface.IsValid())
+    sessionInterface = subSystem->GetSessionInterface ( );
+    if (!sessionInterface.IsValid ( ))
     {
-        UE_LOG(LogTemp, Error, TEXT("Session interface is null. Unable to create session."));
+        UE_LOG ( LogTemp , Error , TEXT ( "Session interface is null." ) );
         return;
     }
 
-    // NetID 가져오기
-    FUniqueNetIdPtr NetID = GetWorld()->GetFirstLocalPlayerFromController()->GetUniqueNetIdForPlatformUser().GetUniqueNetId();
-    if (!NetID.IsValid())
+    ULocalPlayer* LocalPlayer = GetWorld ( ) ? GetWorld ( )->GetFirstLocalPlayerFromController ( ) : nullptr;
+    if (!LocalPlayer)
     {
-        UE_LOG(LogTemp, Error, TEXT("Failed to retrieve a valid UniqueNetId for the local player."));
+        UE_LOG ( LogTemp , Error , TEXT ( "LocalPlayer is null." ) );
+        return;
+    }
+
+    FUniqueNetIdPtr NetID = LocalPlayer->GetUniqueNetIdForPlatformUser ( ).GetUniqueNetId ( );
+    if (!NetID.IsValid ( ))
+    {
+        UE_LOG ( LogTemp , Error , TEXT ( "Invalid UniqueNetId." ) );
         return;
     }
 
     FOnlineSessionSettings settings;
-    // 전용서버를 사용하는가? => 데디케이트 서버
     settings.bIsDedicated = false;
-    HostName = loginInfo.userName;
-    // 랜선인가?
-    FName subSystemName = IOnlineSubsystem::Get( )->GetSubsystemName();
-    // 온라인 서브 시스템이 없는 경우에 LAN으로 연결, 아니라면 온라인 서브 시스템으로 연결
-    settings.bIsLANMatch = (subSystemName == NAME_None);
-    // 공개된 서버인가 아닌가
+    settings.bIsLANMatch = ( subSystem->GetSubsystemName ( ) == NAME_None || subSystem->GetSubsystemName ( ) == FName ( "NULL" ) );
     settings.bShouldAdvertise = true;
-    // 유저 상태정보 사용 여부
     settings.bUsesPresence = true;
-    // 중간에 난입 가능 여부
     settings.bAllowJoinInProgress = true;
     settings.bAllowJoinViaPresence = true;
-    // 최대 인원
-    settings.NumPublicConnections = PlayerCount;
-    // 방 커스텀 정보
-    settings.Set(FName("Room_Name"), StringBase64Encode(RoomName), EOnlineDataAdvertisementType::ViaOnlineServiceAndPing );
-    settings.Set(FName("Host_Name"), StringBase64Encode(HostName), EOnlineDataAdvertisementType::ViaOnlineServiceAndPing );
-    // FUniqueNetId
-    // GetUniqueNetIdForPlatformUser():스팀에서 사용하는 고유 번호
-    // 현재 컨트롤러의 첫번째 로컬 플레이어의 고유한 네트워크 ID 가져옴
-   // FUniqueNetIdPtr NetID = GetWorld()->GetFirstLocalPlayerFromController()->GetUniqueNetIdForPlatformUser().GetUniqueNetId();
+    settings.NumPublicConnections = FMath::Max ( PlayerCount , 1 );
 
-    sessionInterface->CreateSession( *NetID, FName(*HostName) , settings);
+    settings.Set ( FName ( "Room_Name" ) , StringBase64Encode ( RoomName.IsEmpty ( ) ? TEXT ( "OfflineConcert" ) : RoomName ) , EOnlineDataAdvertisementType::ViaOnlineServiceAndPing );
+    settings.Set ( FName ( "Host_Name" ) , StringBase64Encode ( HostName ) , EOnlineDataAdvertisementType::ViaOnlineServiceAndPing );
 
-
-    PRINTLOG(TEXT("Create Session Start %s, Host Name : %s"), *RoomName, *HostName);
+    sessionInterface->CreateSession ( *NetID , FName ( *HostName ) , settings );
 }
 
 void UVirtualGameInstance_KMK::OnMyCreateSessionComplete ( FName SessionName , bool bSuccessful )
 {
-    if ( bSuccessful )
+    if (!bSuccessful)
     {
-        PRINTLOG(TEXT("OnMyCreateSessionComplete"));
-
-        // 서버가 여행을 떠나고 싶다.
-        //GetWorld ( )->ServerTravel ( TEXT ( "/Game/Project/Personal/KMK/Maps/KMK_TravelLevel?listen" ) );
-        //GetWorld ( )->ServerTravel(TEXT("/Game/Project/CommonFile/Maps/BetaMain?listen"), ETravelType::TRAVEL_Absolute);
-
-        HttpActor->ReqMusic( concerInfo.concertId );
-        UE_LOG(LogTemp, Warning, TEXT("Concert ID: %d"), concerInfo.concertId );
-        GetWorld ( )->ServerTravel ( TEXT ( "/Game/Project/CommonFile/Maps/EmptyLevel?listen" ) , ETravelType::TRAVEL_Absolute );
-        PRINTLOG(TEXT("Server successfully created session: %s"), *SessionName.ToString());
+        PRINTLOG ( TEXT ( "OnMyCreateSessionFailed" ) );
+        return;
     }
-    else
+
+    if (HttpActor)
     {
-        PRINTLOG(TEXT("OnMyCreateSessionFailed"));
+        HttpActor->ReqMusic ( concerInfo.concertId );
+    }
+
+    if (UWorld* World = GetWorld ( ))
+    {
+        World->ServerTravel ( TEXT ( "/Game/Project/CommonFile/Maps/EmptyLevel?listen" ) , ETravelType::TRAVEL_Absolute );
     }
 }
 #pragma endregion
 #pragma region Find Session
 void UVirtualGameInstance_KMK::FindOtherSession ( )
 {
-    // 세션 찾기
-    sessionSearch = MakeShareable(new FOnlineSessionSearch);
-
-    // 찾은 세션의 셋팅 : presence이용 방목록 검색
-    // QuerySettings : 세션 검색에 사용할 조건을 저장
-    // SEARCH_PRESENCE : 세션이 유저의 상태 정보를 포함하는지 여부 파악 => 친구가 온라인인 경우만 참여가능, true : 유저 상태 정보를 사용하는 곳에만 사용
-    //  EOnlineComparisonOp::Equals : 검색 조건이 부합한지 => 여기서 조건은 유저 상태정보를 표현하는 세션만 사용한다는 의미
-    sessionSearch->QuerySettings.Set ( SEARCH_PRESENCE , true , EOnlineComparisonOp::Equals );
-    // 온라인 서브 시스템이 존재하지 않으면 LAN 기반으로 세션을 검색함, 아니라면 인터넷 기반 세션으로 사용
-    sessionSearch->bIsLanQuery = IOnlineSubsystem::Get()->GetSubsystemName() == "NULL";
-    // 최대 찾는 방 개수
-    sessionSearch->MaxSearchResults = 20;
-    // 플레이어의 닉네임 0 : 로컬플레이어 기준으로 네트워크 세션 검색
-    sessionInterface->FindSessions(0, sessionSearch.ToSharedRef());
-    // 델리게이트에 바인딩된 함수가 있다면
-    if ( OnFindRoomCompDelegate.IsBound() )
+    if (bOfflineMode || !sessionInterface.IsValid ( ))
     {
-        // 방을 찾았다는 정보를 전달함 => 위잿 생성하게 만들게 하면되는듯
-        OnFindRoomCompDelegate.Broadcast(true);
+        if (OnFindRoomCompDelegate.IsBound ( ))
+        {
+            OnFindRoomCompDelegate.Broadcast ( false );
+        }
+        return;
+    }
+
+    sessionSearch = MakeShareable ( new FOnlineSessionSearch );
+    sessionSearch->QuerySettings.Set ( SEARCH_PRESENCE , true , EOnlineComparisonOp::Equals );
+    sessionSearch->bIsLanQuery = IOnlineSubsystem::Get ( ) && IOnlineSubsystem::Get ( )->GetSubsystemName ( ) == FName ( "NULL" );
+    sessionSearch->MaxSearchResults = 20;
+
+    sessionInterface->FindSessions ( 0 , sessionSearch.ToSharedRef ( ) );
+
+    if (OnFindRoomCompDelegate.IsBound ( ))
+    {
+        OnFindRoomCompDelegate.Broadcast ( true );
     }
 }
 
@@ -218,13 +223,31 @@ void UVirtualGameInstance_KMK::OnMyFindSessionComplete ( bool bSuccessful )
 #pragma endregion
 #pragma region Join Session
 
-void UVirtualGameInstance_KMK::JoinRoom ( int32 ChooseRoomNum, int32 vipNum)
+void UVirtualGameInstance_KMK::JoinRoom ( int32 ChooseRoomNum , int32 vipNum )
 {
-    // vip인 경우 여기에 1이 할당됨
     playerMeshNum = vipNum;
+
+    if (bOfflineMode)
+    {
+        if (UWorld* World = GetWorld ( ))
+        {
+            UGameplayStatics::OpenLevel ( World , FName ( TEXT ( "/Game/Project/CommonFile/Maps/EmptyLevel" ) ) );
+        }
+        return;
+    }
+
+    if (!sessionInterface.IsValid ( ) || !sessionSearch.IsValid ( ))
+    {
+        return;
+    }
+
+    if (!sessionSearch->SearchResults.IsValidIndex ( ChooseRoomNum ))
+    {
+        return;
+    }
+
     auto res = sessionSearch->SearchResults[ChooseRoomNum];
-    // 내가 선택한 방으로 입장
-    sessionInterface->JoinSession(0, FName(HostName), res);
+    sessionInterface->JoinSession ( 0 , FName ( *GetSafeUserName ( ) ) , res );
 }
 
 
@@ -327,17 +350,26 @@ void UVirtualGameInstance_KMK::VisibleStartWidget (bool bVisible)
 
 void UVirtualGameInstance_KMK::SwitchWidget ( int32 num )
 {
-    widget->StartSwitcher->SetActiveWidgetIndex ( num );
+    if (widget && widget->StartSwitcher)
+    {
+        widget->StartSwitcher->SetActiveWidgetIndex ( num );
+    }
 }
 
 void UVirtualGameInstance_KMK::PopUpVisible ( )
 {
-    widget->PayPopUpPanel->SetVisibility(ESlateVisibility::Visible);
+    if (widget && widget->PayPopUpPanel)
+    {
+        widget->PayPopUpPanel->SetVisibility ( ESlateVisibility::Visible );
+    }
 }
 
 void UVirtualGameInstance_KMK::LoginPanel ( )
 {
-    widget->FailLoginPanel->SetVisibility(ESlateVisibility::Visible);
+    if (widget && widget->FailLoginPanel)
+    {
+        widget->FailLoginPanel->SetVisibility ( ESlateVisibility::Visible );
+    }
 }
 
 #pragma endregion
@@ -357,28 +389,27 @@ FLoginInfo UVirtualGameInstance_KMK::GetMyInfo ( )
     return loginInfo;
 }
 // 콘서트 셋팅함
-void UVirtualGameInstance_KMK::SetConcertInfo ( const TArray<FConcertInfo> info, class AHttpActor_KMK* http )
+void UVirtualGameInstance_KMK::SetConcertInfo ( const TArray<FConcertInfo> info , AHttpActor_KMK* http )
 {
-    // 현재시간을 끌고오는 곳
-    FDateTime currentDataTime = FDateTime::Now();
-    int32 year = currentDataTime.GetYear();
-    int32 mon = currentDataTime.GetMonth();
-    int32 day = currentDataTime.GetDay();
-    for (int i = 0; i < info.Num ( ); i++)
-    {
-        // 만약, 서버에 예약된 콘서트장 중에 오늘 날짜가 있다면,
-        if (info[i].concertDate == start)
-        {
-            // 콘서트장 내부에 들어간 공연장 셋팅 정보를 불러오고
-            http->ReqCheckIdStage(info[i].stageId );
-            // concertInfo에 내가 연 콘서트장을 입력함
-            concerInfo = info[i];
-            widget->SetButtEnable(true);
-        }
-    }
     HttpActor = http;
 
-    // FString start = FString::FromInt(year) + TEXT("-") + ChangeString(FString::FromInt(mon))+ TEXT("-") +ChangeString( FString::FromInt(day));
+    for (int32 i = 0; i < info.Num ( ); i++)
+    {
+        if (info[i].concertDate == start)
+        {
+            concerInfo = info[i];
+
+            if (HttpActor && !bOfflineMode)
+            {
+                HttpActor->ReqCheckIdStage ( info[i].stageId );
+            }
+
+            if (widget)
+            {
+                widget->SetButtEnable ( true );
+            }
+        }
+    }
 }
 
 FString UVirtualGameInstance_KMK::ChangeString ( const FString& editText )
@@ -471,13 +502,18 @@ void UVirtualGameInstance_KMK::OnSetStageButt ( )
 
 void UVirtualGameInstance_KMK::SetMyProfile ( )
 {
-    widget->ChangeMyProfile();
+    if (widget)
+    {
+        widget->ChangeMyProfile ( );
+    }
 }
 
 void UVirtualGameInstance_KMK::ChangeTextureWidget ( UTexture2D* texture )
 {
-    widget->ChangeImageStage(texture);
-    UE_LOG(LogTemp, Warning, TEXT("%d" ), stageNum);
+    if (widget)
+    {
+        widget->ChangeImageStage ( texture );
+    }
 }
 
 void UVirtualGameInstance_KMK::SetConcertStageInfo ( FStageInfo& info )
@@ -522,4 +558,29 @@ FString UVirtualGameInstance_KMK::GetRandomName()
 
 void UVirtualGameInstance_KMK::MusicReload ( )
 {
+}
+
+FString UVirtualGameInstance_KMK::GetSafeUserName ( ) const
+{
+    return loginInfo.userName.IsEmpty ( ) ? TEXT ( "Guest" ) : loginInfo.userName;
+}
+
+void UVirtualGameInstance_KMK::SetupOfflineDefaults ( )
+{
+    if (loginInfo.userName.IsEmpty ( ))
+    {
+        loginInfo.userName = TEXT ( "Guest" );
+    }
+
+    if (loginInfo.token.IsEmpty ( ))
+    {
+        loginInfo.token = TEXT ( "OFFLINE" );
+    }
+
+    if (myCash <= 0)
+    {
+        myCash = 1000000;
+    }
+
+    bLogin = true;
 }

@@ -427,4 +427,7 @@ public:
 	FTransform spawnTrans = FTransform(FVector(0 ) );
 #pragma endregion
 
+protected:
+	bool IsOfflineMode ( ) const;
+	void EnterOfflineLogin ( );
 };
